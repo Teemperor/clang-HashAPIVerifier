@@ -1,18 +1,34 @@
+# HashAPIVerifier
 
-# clang-clone-finder
+Checks if the code in ASTStructure.cpp is using all members in the clang AST API for statements.
 
-Searches a project for copy-pasted code in three steps:
+`HashApiVerifier PATH-TO-IGNORE-LIST COMP-DB-PATH`
 
-1. Gets build information by listening what the build system sens to CXX.
+where PATH-TO-IGNORE-LIST is a path to a list of qualified function names
+that aren't used in ASTStructure.cpp but should not be reported.
 
-2. Parses the project with this build information.
+Example content of this file looks like this:
 
-3. Searches all compilation units in the project for clones.
+    # Comment
+    clang::Expr::refersToVectorElement
+    clang::Expr::skipRValueSubobjectAdjustments
+    clang::Expr::tryEvaluateObjectSize
+    clang::ExprWithCleanups::getNumObjects
+    clang::ExprWithCleanups::getObject
+    clang::ExprWithCleanups::getObjects
+    clang::ExprWithCleanups::getSubExpr
+    clang::ExpressionTraitExpr::getQueriedExpression
+    clang::ExpressionTraitExpr::getValue
 
-Run with:
+COMP-DB-PATH is a path to the **directory** containing a compilation
+database for clang. This is needed to retrieve the compiler arguments
+necessary to parse ASTStructure.cpp and all relevant headers.
 
-`clang-clone-finder COMMAND`
+This program ensures that ASTStructure will always correctly
+use the clang AST API methods and should detect if the
+API was extended with methods.
 
-Example: run `clang-clone-finder make` in the `/tests/testproject1` directory.
+It doesn't check if new classes are added to the clang AST API,
+because ASTStructure.cpp will only compile if visit methods
+for all classes are implemented.
 
-Currently only collects build information and prints it to the command line.
