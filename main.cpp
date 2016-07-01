@@ -8,10 +8,11 @@
 #include "clang/Frontend/FrontendActions.h"
 #include "clang/Tooling/CommonOptionsParser.h"
 #include "clang/Tooling/Tooling.h"
+#include "clang/AST/RecursiveASTVisitor.h"
 // Declares llvm::cl::extrahelp.
 #include "llvm/Support/CommandLine.h"
-#include "CloneFinder.h"
 
+using namespace clang;
 using namespace clang::tooling;
 using namespace llvm;
 
