@@ -1,0 +1,14 @@
+
+build
+.idea
+*.user
+# in case someone actually builds the tests
+tests/testproject1/*.o
+tests/testproject1/testbin
+# for crashes
+/compile_commands.json
+/Makefile
+/cmake_install.cmake
+/CMakeFiles
+/CMakeCache.txt
+core.*
