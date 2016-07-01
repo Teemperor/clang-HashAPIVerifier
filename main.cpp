@@ -4,21 +4,22 @@
 #include <sstream>
 #include <string>
 #include <regex>
+#include <cstdlib>
 
 #include "clang/Frontend/FrontendActions.h"
 #include "clang/Tooling/CommonOptionsParser.h"
 #include "clang/Tooling/Tooling.h"
 #include "clang/AST/RecursiveASTVisitor.h"
-// Declares llvm::cl::extrahelp.
 #include "llvm/Support/CommandLine.h"
+#include "clang/AST/ASTConsumer.h"
+#include "clang/Frontend/CompilerInstance.h"
+#include "clang/Frontend/FrontendAction.h"
 
 using namespace clang;
 using namespace clang::tooling;
 using namespace llvm;
 
-// Apply a custom category to all command-line options so that they are the
-// only ones displayed.
-static cl::OptionCategory MyToolCategory("clang-clone-finder options");
+std::set<std::string> UnusedList;
 
 std::string getFileContents(const std::string& path) {
   std::ifstream inputStream(path);
@@ -45,7 +46,7 @@ std::set<std::string> ReadLines(const std::string& path) {
   return Result;
 }
 
-bool hasEnding (std::string const &fullString, std::string const &ending) {
+bool EndsWith(std::string const &fullString, std::string const &ending) {
   if (fullString.length() >= ending.length()) {
     return (0 == fullString.compare (fullString.length() - ending.length(), ending.length(), ending));
   } else {
@@ -102,11 +103,7 @@ public:
 };
 
 const std::vector<std::regex> ReturnTypeFilters = {
-  std::regex("class clang::SourceLocation"),
-  std::regex("[\\s\\S]*_begin[\\s\\S]*"),
-  std::regex("[\\s\\S]*_end[\\s\\S]*"),
-  std::regex("[\\s\\S]*::begin_[^:]+"),
-  std::regex("[\\s\\S]*::end_[^:]+")
+  std::regex("class clang::SourceLocation")
 };
 
 const std::vector<std::regex> NameFilters = {
@@ -135,66 +132,81 @@ bool ShouldCheckMethod(const CXXMethodDecl *D) {
 
 }
 
-int main(int argc, const char **argv) {
-  assert(argc == 3);
+class VerifyHashingCodeConsumer : public clang::ASTConsumer {
+public:
+  explicit VerifyHashingCodeConsumer (ASTContext *Context)
+    : Context(Context) {}
 
-  std::string Code = getFileContents(argv[1]);
+  virtual void HandleTranslationUnit(clang::ASTContext &Context) {
+    FindVisitMethodsVisitor Visitor;
+    Visitor.TraverseTranslationUnitDecl(Context.getTranslationUnitDecl());
 
-  std::vector<std::string> Args = {"-D__STDC_LIMIT_MACROS",
-                                   "-D__STDC_CONSTANT_MACROS",
-                                   "-std=c++11", "-I/usr/lib/clang/3.8.0/include/",
-                                   "-I/data/llvm/gsoc2016/include",
-                                   "-I/data/llvm/gsoc2016/tools/clang/include",
-                                   "-DCLANG_ENABLE_ARCMT", "-DCLANG_ENABLE_OBJC_REWRITER",
-                                   "-DCLANG_ENABLE_STATIC_ANALYZER", "-DGTEST_HAS_RTTI=0",
-                                   "-D_DEBUG", "-D_GNU_SOURCE", "-D__STDC_CONSTANT_MACROS",
-                                   "-D__STDC_FORMAT_MACROS", "-D__STDC_LIMIT_MACROS",
-                                   "-I/data/llvm/gsoc2016-build/tools/clang/lib/AST",
-                                   "-I/data/llvm/gsoc2016/tools/clang/lib/AST",
-                                   "-I/data/llvm/gsoc2016/tools/clang/include",
-                                   "-I/data/llvm/gsoc2016-build/tools/clang/include",
-                                   "-I/data/llvm/gsoc2016-build/include",
-                                   "-I/data/llvm/gsoc2016/include", "-fPIC",
-                                   "-fvisibility-inlines-hidden",
-                                   "-std=c++11",
-                                   "-ffunction-sections", "-fdata-sections",
-                                   "-fno-common", "-Woverloaded-virtual", "-fno-strict-aliasing",
-                                   "-O3", "-UNDEBUG", "-fno-exceptions", "-fno-rtti"};
-  auto AST = clang::tooling::buildASTFromCodeWithArgs(Code, Args, "ASTStructure.cpp");
+    std::set<std::string> MemberCalls = Visitor.MemberCalls;
 
-  FindVisitMethodsVisitor Visitor;
-  Visitor.TraverseTranslationUnitDecl(AST->getASTContext().getTranslationUnitDecl());
+    std::set<std::string> AllMemberCalls;
 
-  std::set<std::string> UnusedList = ReadLines(argv[2]);
+    std::vector<std::string> NotFoundCalls;
 
-  std::set<std::string> MemberCalls = Visitor.MemberCalls;
-
-  std::set<std::string> AllMemberCalls;
-
-  std::vector<std::string> NotFoundCalls;
-
-  for (const CXXRecordDecl *CD : Visitor.APIClasses) {
-    for (const CXXMethodDecl *MD : CD->methods()) {
-      if (ShouldCheckMethod(MD)) {
-        AllMemberCalls.insert(MD->getQualifiedNameAsString());
+    for (const CXXRecordDecl *CD : Visitor.APIClasses) {
+      for (const CXXMethodDecl *MD : CD->methods()) {
+        if (ShouldCheckMethod(MD)) {
+          AllMemberCalls.insert(MD->getQualifiedNameAsString());
+        }
       }
     }
-  }
 
-  for (auto& Call : AllMemberCalls) {
-    if (UnusedList.find(Call) == UnusedList.end() &&
-        MemberCalls.find(Call) == MemberCalls.end()) {
-      NotFoundCalls.push_back(Call);
+    for (auto& Call : AllMemberCalls) {
+      if (UnusedList.find(Call) == UnusedList.end() &&
+          MemberCalls.find(Call) == MemberCalls.end()) {
+        NotFoundCalls.push_back(Call);
+      }
+    }
+
+    if (!NotFoundCalls.empty()) {
+      std::cout << "Following methods are never called and not marked unused:\n";
+      for (auto& Call : NotFoundCalls) {
+        std::cout << Call << "\n";
+      }
+      std::exit(1);
     }
   }
+private:
+  ASTContext *Context;
+};
 
-  if (NotFoundCalls.empty()) {
+class VerifyHashingCodeAction : public clang::ASTFrontendAction {
+public:
+  virtual std::unique_ptr<clang::ASTConsumer> CreateASTConsumer(
+    clang::CompilerInstance &Compiler, llvm::StringRef InFile) {
+    return std::unique_ptr<clang::ASTConsumer>(
+        new VerifyHashingCodeConsumer(&Compiler.getASTContext()));
+  }
+};
+
+int main(int argc, const char **argv) {
+  if (argc != 3) {
+    std::cerr << "You need to invoke this program like this:\n";
+    std::cerr << argv[0] << " PATH-TO-IGNORE-LIST COMP-DB-PATH\n";
+  }
+  UnusedList = ReadLines(argv[1])
+
+  std::string Error;
+  auto DB = CompilationDatabase::loadFromDirectory(argv[2], Error);
+  if (!Error.empty()) {
+    std::cerr << Error << std::endl;
+    assert(false && "Error while reading compilation database");
+  }
+
+  for (const CompileCommand& Command : DB->getAllCompileCommands()) {
+    CompileCommand C = Command;
+    if (EndsWith(C.Filename, "ASTStructure.cpp")) {
+      std::vector<std::string> Args = C.CommandLine;
+
+      FileManager* Manager = new FileManager(FileSystemOptions());
+      clang::tooling::ToolInvocation Invocation(Args, new VerifyHashingCodeAction(), Manager);
+      Invocation.run();
       return 0;
-  } else {
-    std::cerr << "Following methods are never called and not marked unused:\n";
-    for (auto& Call : NotFoundCalls) {
-      std::cerr << Call << "\n";
     }
-    return 1;
   }
+  std::cerr << "Can't find compilation command for ASTStructure.cpp in DB.";
 }
